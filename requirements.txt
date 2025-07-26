@@ -1,5 +1,5 @@
 Flask
-gunicorn
-torch
 transformers
+torch
 better_profanity
+gunicorn
