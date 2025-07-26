@@ -1,152 +1,78 @@
-from flask import Flask, request, jsonify, render_template_string
-from better_profanity import profanity
+import streamlit as st
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-app = Flask(__name__)
+# Load DialoGPT
+@st.cache_resource
+def load_model():
+    tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-small")
+    model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-small")
+    return tokenizer, model
 
-# Load lightweight DialoGPT model
-model_name = "microsoft/DialoGPT-small"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
+tokenizer, model = load_model()
 
-# Load profanity filter
-profanity.load_censor_words()
+# Initialize chat history
+if 'chat_history_ids' not in st.session_state:
+    st.session_state.chat_history_ids = None
+if 'past_inputs' not in st.session_state:
+    st.session_state.past_inputs = []
+if 'generated_responses' not in st.session_state:
+    st.session_state.generated_responses = []
 
-# HTML Template
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>MindCompanion ✨</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background: linear-gradient(to right, #141e30, #243b55);
-            font-family: 'Arial', sans-serif;
-            color: #fff;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            height: 100vh;
-        }
-        h1 {
-            font-family: 'Great Vibes', cursive;
-            font-size: 3em;
-            margin-top: 30px;
-        }
-        #chatbox {
-            background-color: rgba(255,255,255,0.1);
-            border-radius: 10px;
-            padding: 20px;
-            width: 90%;
-            max-width: 600px;
-            height: 60vh;
-            overflow-y: auto;
-            margin: 20px 0;
-        }
-        .message {
-            margin: 10px 0;
-            padding: 10px;
-            border-radius: 10px;
-            max-width: 80%;
-        }
-        .user {
-            background-color: #3b5998;
-            align-self: flex-end;
-        }
-        .bot {
-            background-color: #8b9dc3;
-            align-self: flex-start;
-        }
-        form {
-            display: flex;
-            width: 90%;
-            max-width: 600px;
-        }
-        input {
-            flex: 1;
-            padding: 10px;
-            border-radius: 10px;
-            border: none;
-            font-size: 1em;
-        }
-        button {
-            padding: 10px 15px;
-            background: #5a6e90;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            margin-left: 10px;
-            cursor: pointer;
-        }
-        button:hover {
-            background: #3f4f66;
-        }
-    </style>
-</head>
-<body>
-    <h1>MindCompanion</h1>
-    <div id="chatbox"></div>
-    <form onsubmit="sendMessage(event)">
-        <input type="text" id="user_input" placeholder="What's on your mind?" required>
-        <button type="submit">Send</button>
-    </form>
-<script>
-    const chatbox = document.getElementById("chatbox");
+# Page config
+st.set_page_config(page_title="MindCompanion ✨", layout="centered")
+st.title("🤖 MindCompanion")
+st.subheader("Reflect · Release · Renew")
 
-    function addMessage(text, sender) {
-        const msg = document.createElement("div");
-        msg.className = "message " + sender;
-        msg.textContent = text;
-        chatbox.appendChild(msg);
-        chatbox.scrollTop = chatbox.scrollHeight;
-    }
+# Dark/Light toggle
+theme = st.toggle("🌗 Toggle Dark Mode")
+if theme:
+    st.markdown(
+        """
+        <style>
+        body { background-color: #f5f5f5; color: #222; }
+        .stTextInput input { background-color: #fff; }
+        </style>
+        """, unsafe_allow_html=True)
+else:
+    st.markdown(
+        """
+        <style>
+        body { background-color: #0d1b2a; color: #fff; }
+        .stTextInput input { background-color: #1f4068; color: #fff; }
+        </style>
+        """, unsafe_allow_html=True)
 
-    async function sendMessage(event) {
-        event.preventDefault();
-        const input = document.getElementById("user_input");
-        const text = input.value;
-        addMessage(text, "user");
-        input.value = "";
-        addMessage("Typing...", "bot");
+# Chatbox display
+for i in range(len(st.session_state.past_inputs)):
+    st.markdown(f"**🧑 You:** {st.session_state.past_inputs[i]}")
+    st.markdown(f"**🤖 MindCompanion:** {st.session_state.generated_responses[i]}")
 
-        const res = await fetch("/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text })
-        });
+# User input
+user_input = st.text_input("How are you feeling today?", key="input")
 
-        const data = await res.json();
-        const botMessages = document.querySelectorAll(".bot");
-        botMessages[botMessages.length - 1].textContent = data.reply;
-    }
-</script>
-</body>
-</html>
-'''
+if st.button("Send") and user_input:
+    # Encode user input
+    new_input_ids = tokenizer.encode(user_input + tokenizer.eos_token, return_tensors='pt')
 
-@app.route('/')
-def home():
-    return render_template_string(HTML_TEMPLATE)
+    # Append to chat history
+    bot_input_ids = torch.cat([st.session_state.chat_history_ids, new_input_ids], dim=-1) if st.session_state.chat_history_ids is not None else new_input_ids
 
-@app.route('/chat', methods=['POST'])
-def chat():
-    user_input = request.json['message']
-    if profanity.contains_profanity(user_input):
-        return jsonify({"reply": "Let’s keep this a respectful space 🌸"})
+    # Generate reply
+    st.session_state.chat_history_ids = model.generate(
+        bot_input_ids,
+        max_length=1000,
+        pad_token_id=tokenizer.eos_token_id,
+        no_repeat_ngram_size=3,
+        do_sample=True,
+        top_k=50,
+        top_p=0.95,
+        temperature=0.7,
+    )
 
-    input_ids = tokenizer.encode(user_input + tokenizer.eos_token, return_tensors='pt').to(device)
-    reply_ids = model.generate(input_ids, max_length=1000, pad_token_id=tokenizer.eos_token_id)
-    reply = tokenizer.decode(reply_ids[:, input_ids.shape[-1]:][0], skip_special_tokens=True)
+    # Decode and store response
+    reply = tokenizer.decode(st.session_state.chat_history_ids[:, bot_input_ids.shape[-1]:][0], skip_special_tokens=True)
 
-    return jsonify({"reply": reply})
-
-if __name__ == '__main__':
-    app.run(debug=True)
+    st.session_state.past_inputs.append(user_input)
+    st.session_state.generated_responses.append(reply)
+    st.experimental_rerun()
