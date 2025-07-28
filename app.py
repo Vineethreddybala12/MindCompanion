@@ -121,4 +121,4 @@ if submitted and user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     bot_reply = get_bot_reply(user_input)
     st.session_state.messages.append({"role": "bot", "content": bot_reply})
-    st.rerun()
+    
